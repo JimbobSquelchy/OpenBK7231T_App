@@ -213,4 +213,78 @@ void Test_Hue() {
 	Test_Hue_Relays();
 }
 
+// Wemo emulation: an Echo reads setup.xml, then switches the device with SOAP calls to basicevent1.
+static const char *Wemo_Set(int state) {
+	char body[512];
+	snprintf(body, sizeof(body),
+		"<?xml version=\"1.0\" encoding=\"utf-8\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" "
+		"s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>"
+		"<u:SetBinaryState xmlns:u=\"urn:Belkin:service:basicevent:1\"><BinaryState>%i</BinaryState></u:SetBinaryState>"
+		"</s:Body></s:Envelope>", state);
+	Test_FakeHTTPClientPacket_POST("upnp/control/basicevent1", body);
+	return Test_GetLastHTMLReply();
+}
+static const char *Wemo_Get() {
+	Test_FakeHTTPClientPacket_POST("upnp/control/basicevent1",
+		"<?xml version=\"1.0\" encoding=\"utf-8\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>"
+		"<u:GetBinaryState xmlns:u=\"urn:Belkin:service:basicevent:1\"></u:GetBinaryState></s:Body></s:Envelope>");
+	return Test_GetLastHTMLReply();
+}
+
+void Test_Wemo_Relays() {
+	char expected[64];
+
+	SIM_ClearOBK(0);
+	// a two-socket strip: Wemo presents one socket, so only the first relay is switched
+	PIN_SetPinRoleForPinIndex(6, IOR_Relay);
+	PIN_SetPinChannelForPinIndex(6, 1);
+	PIN_SetPinRoleForPinIndex(7, IOR_Relay);
+	PIN_SetPinChannelForPinIndex(7, 2);
+	CFG_SetDeviceName("Desk & Fan");	// must be escaped in the XML
+	CMD_ExecuteCommand("startDriver SSDP", 0);
+	CMD_ExecuteCommand("startDriver Wemo", 0);
+
+	Test_FakeHTTPClientPacket_GET("setup.xml");
+	SELFTEST_ASSERT(strstr(Test_GetLastHTMLReply(), "<friendlyName>Desk &amp; Fan</friendlyName>") != 0);
+	SELFTEST_ASSERT(strstr(Test_GetLastHTMLReply(), "<serialNumber>201612") != 0);
+	snprintf(expected, sizeof(expected), "<presentationURL>http://%s:80/</presentationURL>", HAL_GetMyIPString());
+	SELFTEST_ASSERT(strstr(Test_GetLastHTMLReply(), expected) != 0);
+	SELFTEST_ASSERT(strstr(Test_GetLastHTMLReply(), "<binaryState>0</binaryState>") != 0);
+
+	SELFTEST_ASSERT(strstr(Wemo_Set(1), "<BinaryState>1</BinaryState>") != 0);
+	SELFTEST_ASSERT_CHANNEL(1, 1);
+	SELFTEST_ASSERT_CHANNEL(2, 0);
+	SELFTEST_ASSERT(strstr(Wemo_Get(), "<BinaryState>1</BinaryState>") != 0);
+	Test_FakeHTTPClientPacket_GET("setup.xml");
+	SELFTEST_ASSERT(strstr(Test_GetLastHTMLReply(), "<binaryState>1</binaryState>") != 0);
+
+	SELFTEST_ASSERT(strstr(Wemo_Set(0), "<BinaryState>0</BinaryState>") != 0);
+	SELFTEST_ASSERT_CHANNEL(1, 0);
+
+	// anything but 0 or 1 is rejected and changes nothing
+	SELFTEST_ASSERT(strstr(Wemo_Set(7), "<s:Fault>") != 0);
+	SELFTEST_ASSERT_CHANNEL(1, 0);
+}
+
+void Test_Wemo_LED() {
+	SIM_ClearOBK(0);
+	PIN_SetPinRoleForPinIndex(8, IOR_PWM);
+	PIN_SetPinChannelForPinIndex(8, 4);
+	PIN_SetPinRoleForPinIndex(7, IOR_PWM);
+	PIN_SetPinChannelForPinIndex(7, 5);
+	CMD_ExecuteCommand("startDriver SSDP", 0);
+	CMD_ExecuteCommand("startDriver Wemo", 0);
+	CMD_ExecuteCommand("led_enableAll 0", 0);
+
+	Wemo_Set(1);
+	SELFTEST_ASSERT(LED_GetEnableAll() == 1);
+	Wemo_Set(0);
+	SELFTEST_ASSERT(LED_GetEnableAll() == 0);
+}
+
+void Test_Wemo() {
+	Test_Wemo_Relays();
+	Test_Wemo_LED();
+}
+
 #endif
